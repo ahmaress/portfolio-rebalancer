@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev, main]
+
+permissions:
+  contents: read
+
+jobs:
+  dependencies:
+    name: Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Download modules
+        run: go mod download
+      - name: Verify module checksums
+        run: go mod verify
+
+  build:
+    name: Build & test
+    runs-on: ubuntu-latest
+    needs: dependencies
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Unit tests
+        run: go test -short -count=1 ./...
+
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  hygiene:
+    name: Repo hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: No env files or local notes committed
+        run: |
+          bad=$(git ls-files | grep -E '(^|/)\.env($|\.)|(^|/)COMMIT_PLAN\.md$' | grep -v '\.env\.example$' || true)
+          if [ -n "$bad" ]; then echo "Files that must not be committed:"; echo "$bad"; exit 1; fi
+      - name: No large files (> 1 MiB)
+        run: |
+          large=$(git ls-files -z | xargs -0 -r du -k | awk '$1 > 1024 {print $2}')
+          if [ -n "$large" ]; then echo "Large files:"; echo "$large"; exit 1; fi
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then echo "Run gofmt on:"; echo "$unformatted"; exit 1; fi
