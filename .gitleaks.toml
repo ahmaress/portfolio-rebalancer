@@ -1,0 +1,10 @@
+# Use gitleaks' default rules, with two known false positives allowlisted.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Dummy test secret and env-var references (not real secrets)"
+regexes = [
+  '''0123456789abcdef0123456789abcdef''', # fixed JWT secret used only in tests
+  '''\$\$\{ELASTIC_PASSWORD\}''',         # compose healthcheck reads the password from env
+]
