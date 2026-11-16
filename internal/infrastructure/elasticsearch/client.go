@@ -3,7 +3,10 @@ package elasticsearch
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/elastic/go-elasticsearch/v8"
@@ -68,4 +71,98 @@ func (c *Client) waitForReady(ctx context.Context, timeout time.Duration) error 
 		time.Sleep(2 * time.Second)
 	}
 	return fmt.Errorf("elasticsearch not ready after %s: %v", timeout, lastErr)
+}
+
+func (c *Client) mappings() map[string]string {
+	return map[string]string{
+		c.Indices.Portfolios: `{
+			"properties": {
+				"user_id":           {"type": "keyword"},
+				"allocation":        {"type": "object"},
+				"drift_threshold":   {"type": "float"},
+				"min_trade_percent": {"type": "float"},
+				"created_at":        {"type": "date"},
+				"updated_at":        {"type": "date"}
+			}
+		}`,
+		c.Indices.Transactions: `{
+			"properties": {
+				"id":                {"type": "keyword"},
+				"rebalance_id":      {"type": "keyword"},
+				"user_id":           {"type": "keyword"},
+				"action":            {"type": "keyword"},
+				"asset":             {"type": "keyword"},
+				"rebalance_percent": {"type": "float"},
+				"amount":            {"type": "double"},
+				"created_at":        {"type": "date"}
+			}
+		}`,
+		c.Indices.Rebalances: `{
+			"properties": {
+				"id":                {"type": "keyword"},
+				"user_id":           {"type": "keyword"},
+				"status":            {"type": "keyword"},
+				"new_allocation":    {"type": "object", "enabled": false},
+				"portfolio_value":   {"type": "double"},
+				"idempotency_key":   {"type": "keyword"},
+				"transaction_count": {"type": "integer"},
+				"max_drift":         {"type": "float"},
+				"message":           {"type": "text", "index": false},
+				"error":             {"type": "text", "index": false},
+				"attempts":          {"type": "integer"},
+				"created_at":        {"type": "date"},
+				"updated_at":        {"type": "date"},
+				"completed_at":      {"type": "date"}
+			}
+		}`,
+	}
+}
+
+// ensureIndices creates missing indices and adds any new fields to existing
+// ones (additive mapping updates are safe; conflicting ones are reported).
+func (c *Client) ensureIndices(ctx context.Context) error {
+	for index, properties := range c.mappings() {
+		res, err := c.ES.Indices.Exists([]string{index}, c.ES.Indices.Exists.WithContext(ctx))
+		if err != nil {
+			return fmt.Errorf("checking index %s: %w", index, err)
+		}
+		res.Body.Close()
+
+		if res.StatusCode == http.StatusOK {
+			putRes, err := c.ES.Indices.PutMapping(
+				[]string{index},
+				strings.NewReader(properties),
+				c.ES.Indices.PutMapping.WithContext(ctx),
+			)
+			if err != nil {
+				return fmt.Errorf("updating mapping for %s: %w", index, err)
+			}
+			body, _ := io.ReadAll(putRes.Body)
+			putRes.Body.Close()
+			if putRes.IsError() {
+				return fmt.Errorf("updating mapping for %s [%s]: %s (drop the index if it holds only dev data)",
+					index, putRes.Status(), body)
+			}
+			c.logger.Info("index mapping up to date", "index", index)
+			continue
+		}
+
+		createBody := `{"mappings": ` + properties + `}`
+		createRes, err := c.ES.Indices.Create(
+			index,
+			c.ES.Indices.Create.WithBody(strings.NewReader(createBody)),
+			c.ES.Indices.Create.WithContext(ctx),
+		)
+		if err != nil {
+			return fmt.Errorf("creating index %s: %w", index, err)
+		}
+		body, _ := io.ReadAll(createRes.Body)
+		createRes.Body.Close()
+		// A concurrent instance may have created it first.
+		if createRes.IsError() && !strings.Contains(string(body), "resource_already_exists_exception") {
+			return fmt.Errorf("elasticsearch error creating index %s [%s]: %s", index, createRes.Status(), body)
+		}
+		c.logger.Info("index created", "index", index)
+	}
+	return nil
 }
