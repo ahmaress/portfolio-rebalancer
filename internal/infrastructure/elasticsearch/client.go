@@ -43,6 +43,40 @@ type Client struct {
 	logger  *slog.Logger
 }
 
+func New(opts Options, logger *slog.Logger) (*Client, error) {
+	es, err := elasticsearch.NewClient(elasticsearch.Config{
+		Addresses: []string{opts.URL},
+		Username:  opts.Username,
+		Password:  opts.Password,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("creating elasticsearch client: %w", err)
+	}
+
+	c := &Client{
+		ES: es,
+		Indices: Indices{
+			Portfolios:   opts.IndexPrefix + IndexPortfolios,
+			Transactions: opts.IndexPrefix + IndexTransactions,
+			Rebalances:   opts.IndexPrefix + IndexRebalances,
+		},
+		logger: logger,
+	}
+
+	wait := opts.ReadyWait
+	if wait == 0 {
+		wait = 30 * time.Second
+	}
+	ctx := context.Background()
+	if err := c.waitForReady(ctx, wait); err != nil {
+		return nil, err
+	}
+	if err := c.ensureIndices(ctx); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
 // Ping reports whether Elasticsearch is reachable; used by the readiness probe.
 func (c *Client) Ping(ctx context.Context) error {
 	res, err := c.ES.Ping(c.ES.Ping.WithContext(ctx))
