@@ -2,6 +2,7 @@ package elasticsearch
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -199,4 +200,53 @@ func (c *Client) ensureIndices(ctx context.Context) error {
 		c.logger.Info("index created", "index", index)
 	}
 	return nil
+}
+
+// DeleteIndices removes all indices owned by this client. Intended for tests.
+func (c *Client) DeleteIndices(ctx context.Context) error {
+	res, err := c.ES.Indices.Delete(
+		[]string{c.Indices.Portfolios, c.Indices.Transactions, c.Indices.Rebalances},
+		c.ES.Indices.Delete.WithContext(ctx),
+		c.ES.Indices.Delete.WithIgnoreUnavailable(true),
+	)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return fmt.Errorf("deleting indices: %s", res.Status())
+	}
+	return nil
+}
+
+// esError builds an error from a failed Elasticsearch response.
+func esError(op string, res interface {
+	Status() string
+}, body io.Reader) error {
+	b, _ := io.ReadAll(body)
+	return fmt.Errorf("%s: elasticsearch error [%s]: %s", op, res.Status(), string(b))
+}
+
+// searchHits is the subset of a search response we decode.
+type searchHits[T any] struct {
+	Hits struct {
+		Total struct {
+			Value int `json:"value"`
+		} `json:"total"`
+		Hits []struct {
+			Source T `json:"_source"`
+		} `json:"hits"`
+	} `json:"hits"`
+}
+
+func decodeSearch[T any](r io.Reader) ([]*T, int, error) {
+	var sr searchHits[T]
+	if err := json.NewDecoder(r).Decode(&sr); err != nil {
+		return nil, 0, fmt.Errorf("decoding search response: %w", err)
+	}
+	out := make([]*T, 0, len(sr.Hits.Hits))
+	for i := range sr.Hits.Hits {
+		out = append(out, &sr.Hits.Hits[i].Source)
+	}
+	return out, sr.Hits.Total.Value, nil
 }
