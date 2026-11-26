@@ -44,3 +44,45 @@ const (
 	ActionBuy  = "BUY"
 	ActionSell = "SELL"
 )
+
+// Rebalance tracks one rebalance request through its lifecycle.
+type Rebalance struct {
+	ID               string             `json:"id"`
+	UserID           string             `json:"user_id"`
+	Status           string             `json:"status"`
+	NewAllocation    map[string]float64 `json:"new_allocation"`
+	PortfolioValue   float64            `json:"portfolio_value,omitempty"`
+	IdempotencyKey   string             `json:"idempotency_key,omitempty"`
+	TransactionCount int                `json:"transaction_count"`
+	MaxDrift         float64            `json:"max_drift"`
+	Message          string             `json:"message,omitempty"`
+	Error            string             `json:"error,omitempty"`
+	Attempts         int                `json:"attempts"`
+	CreatedAt        time.Time          `json:"created_at"`
+	UpdatedAt        time.Time          `json:"updated_at"`
+	CompletedAt      *time.Time         `json:"completed_at,omitempty"`
+}
+
+const (
+	StatusQueued     = "queued"
+	StatusProcessing = "processing"
+	StatusCompleted  = "completed"
+	StatusFailed     = "failed"
+)
+
+// IsTerminal reports whether the rebalance will not change status again.
+func (r *Rebalance) IsTerminal() bool {
+	return r.Status == StatusCompleted || r.Status == StatusFailed
+}
+
+// RebalanceResult is published once a rebalance reaches a terminal state so
+// downstream systems can react without polling.
+type RebalanceResult struct {
+	RebalanceID  string                  `json:"rebalance_id"`
+	UserID       string                  `json:"user_id"`
+	Status       string                  `json:"status"`
+	Message      string                  `json:"message,omitempty"`
+	Error        string                  `json:"error,omitempty"`
+	Transactions []*RebalanceTransaction `json:"transactions"`
+	CompletedAt  time.Time               `json:"completed_at"`
+}
